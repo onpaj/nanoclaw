@@ -458,6 +458,7 @@ async function runQuery(
             MS365_MCP_TENANT_ID: sdkEnv.MS365_TENANT_ID || '',
             MS365_MCP_TOKEN_CACHE_PATH: '/workspace/ms365-cache/.token-cache.json',
             MS365_MCP_SELECTED_ACCOUNT_PATH: '/workspace/ms365-cache/.selected-account.json',
+            HOME: '/workspace/group/.ms365home',
           },
         },
       },
