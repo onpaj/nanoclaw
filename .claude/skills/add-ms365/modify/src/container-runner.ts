@@ -161,15 +161,6 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Shared MS365 token cache (device code flow, multi-account)
-  const ms365CacheDir = path.join(DATA_DIR, 'ms365-cache');
-  fs.mkdirSync(ms365CacheDir, { recursive: true });
-  mounts.push({
-    hostPath: ms365CacheDir,
-    containerPath: '/workspace/ms365-cache',
-    readonly: false,
-  });
-
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);

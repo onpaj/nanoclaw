@@ -433,7 +433,8 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__ms365__*'
+        'mcp__ollama__*',
+        'mcp__ms365__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -449,15 +450,17 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ollama: {
+          command: 'node',
+          args: [path.join(path.dirname(mcpServerPath), 'ollama-mcp-stdio.js')],
+        },
         ms365: {
           command: 'ms-365-mcp-server',
-          args: ['--org-mode', '--preset', 'mail,calendar,work'],
+          args: ['--preset', 'mail,calendar'],
           env: {
-            MS365_MCP_CLIENT_ID: sdkEnv.MS365_CLIENT_ID || '',
-            MS365_MCP_CLIENT_SECRET: sdkEnv.MS365_CLIENT_SECRET || '',
-            MS365_MCP_TENANT_ID: sdkEnv.MS365_TENANT_ID || '',
-            MS365_MCP_TOKEN_CACHE_PATH: '/workspace/ms365-cache/.token-cache.json',
-            MS365_MCP_SELECTED_ACCOUNT_PATH: '/workspace/ms365-cache/.selected-account.json',
+            MS365_CLIENT_ID: sdkEnv['MS365_CLIENT_ID'] || '',
+            MS365_CLIENT_SECRET: sdkEnv['MS365_CLIENT_SECRET'] || '',
+            MS365_TENANT_ID: sdkEnv['MS365_TENANT_ID'] || '',
           },
         },
       },

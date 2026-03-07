@@ -34,6 +34,7 @@ export class GroupQueue {
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
+  private inputCallbacks = new Map<string, () => void>();
 
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);
@@ -127,6 +128,26 @@ export class GroupQueue {
     this.runTask(groupJid, { id: taskId, groupJid, fn }).catch((err) =>
       logger.error({ groupJid, taskId, err }, 'Unhandled error in runTask'),
     );
+  }
+
+  /**
+   * Register a callback to be invoked when a message is piped to the active
+   * container. Used by processGroupMessages to reset the idle timer on input.
+   */
+  registerInputCallback(groupJid: string, cb: () => void): void {
+    this.inputCallbacks.set(groupJid, cb);
+  }
+
+  clearInputCallback(groupJid: string): void {
+    this.inputCallbacks.delete(groupJid);
+  }
+
+  /**
+   * Notify that a new message was piped to the active container for this group.
+   * Fires the registered input callback (e.g. to reset the idle timer).
+   */
+  notifyInput(groupJid: string): void {
+    this.inputCallbacks.get(groupJid)?.();
   }
 
   registerProcess(

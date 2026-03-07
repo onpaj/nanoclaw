@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y \
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser and claude-code globally
+# Install agent-browser, claude-code, and MS365 MCP server globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code @softeria/ms-365-mcp-server
 
 # Create app directory

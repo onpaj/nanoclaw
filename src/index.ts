@@ -200,6 +200,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
+  queue.registerInputCallback(chatJid, resetIdleTimer);
+
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
@@ -233,6 +235,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+  queue.clearInputCallback(chatJid);
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -244,13 +247,25 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       );
       return true;
     }
-    // Roll back cursor so retries can re-process these messages
-    lastAgentTimestamp[chatJid] = previousCursor;
-    saveState();
-    logger.warn(
-      { group: group.name },
-      'Agent error, rolled back message cursor for retry',
-    );
+    // Only roll back if the message loop hasn't advanced the cursor further
+    // via IPC during this run. If it has, those messages were already piped
+    // into the (failed) container and would be re-sent as duplicates if we
+    // rolled back past them; leave the cursor where the IPC path left it.
+    const currentCursor = lastAgentTimestamp[chatJid] || '';
+    const runCursor = missedMessages[missedMessages.length - 1].timestamp;
+    if (currentCursor <= runCursor) {
+      lastAgentTimestamp[chatJid] = previousCursor;
+      saveState();
+      logger.warn(
+        { group: group.name },
+        'Agent error, rolled back message cursor for retry',
+      );
+    } else {
+      logger.warn(
+        { group: group.name },
+        'Agent error, IPC advanced cursor during run — skipping rollback to prevent duplicate IPC messages',
+      );
+    }
     return false;
   }
 
@@ -403,13 +418,14 @@ async function startMessageLoop(): Promise<void> {
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
-          const allPending = getMessagesSince(
+          // If nothing new, skip — the messages were already consumed as
+          // the initial prompt by processGroupMessages (startup race guard).
+          const messagesToSend = getMessagesSince(
             chatJid,
             lastAgentTimestamp[chatJid] || '',
             ASSISTANT_NAME,
           );
-          const messagesToSend =
-            allPending.length > 0 ? allPending : groupMessages;
+          if (messagesToSend.length === 0) continue;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {
@@ -417,6 +433,7 @@ async function startMessageLoop(): Promise<void> {
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
             );
+            queue.notifyInput(chatJid);
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
@@ -471,8 +488,10 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
-    await queue.shutdown(10000);
+    // Disconnect channels FIRST so the dying process stops acknowledging
+    // Slack Socket Mode events (prevents event loss during restart overlap)
     for (const ch of channels) await ch.disconnect();
+    await queue.shutdown(10000);
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

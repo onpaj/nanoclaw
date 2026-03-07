@@ -1,0 +1,17 @@
+skill: ms365
+version: 1.0.0
+description: "Microsoft 365 integration via MCP server — Outlook email and calendar via Microsoft Graph API"
+core_version: 0.1.0
+modifies:
+  - container/Dockerfile
+  - container/agent-runner/src/index.ts
+  - src/container-runner.ts
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - MS365_CLIENT_ID
+    - MS365_CLIENT_SECRET
+    - MS365_TENANT_ID
+conflicts: []
+depends: []
+test: "npm run build && ./container/build.sh"
