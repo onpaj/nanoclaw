@@ -67,6 +67,9 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+// Track piped message IDs that have ⏳ reactions, so we can replace them
+// with ✅ when the agent responds.
+const pipedReactionIds = new Map<string, string[]>();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -231,6 +234,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
+        // Clear any piped message hourglass reactions now that we have a response
+        const pipedIds = pipedReactionIds.get(chatJid);
+        if (pipedIds && pipedIds.length > 0) {
+          const ids = pipedIds.splice(0);
+          for (const msgId of ids) {
+            channel.removeReaction?.(chatJid, msgId, 'hourglass_flowing_sand')
+              ?.catch(() => {});
+            channel.addReaction?.(chatJid, msgId, 'white_check_mark')
+              ?.catch(() => {});
+          }
+        }
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -250,15 +264,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   queue.clearInputCallback(chatJid);
 
   // Replace ⏳ with ✅ or ❌ based on outcome
+  const completionEmoji = output === 'error' || hadError ? 'x' : 'white_check_mark';
   await channel.removeReaction?.(
     chatJid,
     triggerMessageId,
     'hourglass_flowing_sand',
   );
-  if (output === 'error' || hadError) {
-    await channel.addReaction?.(chatJid, triggerMessageId, 'x');
-  } else {
-    await channel.addReaction?.(chatJid, triggerMessageId, 'white_check_mark');
+  await channel.addReaction?.(chatJid, triggerMessageId, completionEmoji);
+
+  // Also clean up any piped message reactions that weren't cleared by output
+  const remainingPiped = pipedReactionIds.get(chatJid);
+  if (remainingPiped && remainingPiped.length > 0) {
+    const ids = remainingPiped.splice(0);
+    for (const msgId of ids) {
+      await channel.removeReaction?.(chatJid, msgId, 'hourglass_flowing_sand');
+      await channel.addReaction?.(chatJid, msgId, completionEmoji);
+    }
   }
 
   if (output === 'error' || hadError) {
@@ -466,6 +487,18 @@ async function startMessageLoop(): Promise<void> {
               .setTyping?.(chatJid, true)
               ?.catch((err) =>
                 logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
+              );
+            // Add ⏳ reaction to the last trigger message (same as processGroupMessages)
+            const pipedTriggerMsgId =
+              messagesToSend[messagesToSend.length - 1].id;
+            if (!pipedReactionIds.has(chatJid)) {
+              pipedReactionIds.set(chatJid, []);
+            }
+            pipedReactionIds.get(chatJid)!.push(pipedTriggerMsgId);
+            channel
+              .addReaction?.(chatJid, pipedTriggerMsgId, 'hourglass_flowing_sand')
+              ?.catch((err) =>
+                logger.warn({ chatJid, err }, 'Failed to add piped reaction'),
               );
           } else {
             // No active container — enqueue for a new one
