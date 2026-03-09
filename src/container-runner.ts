@@ -124,28 +124,54 @@ function buildVolumeMounts(
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
+
+  // Always update per-group settings (env + hooks for self-improvement)
+  const desiredSettings = {
+    env: {
+      // Enable agent swarms (subagent orchestration)
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+      // Load CLAUDE.md from additional mounted directories
+      CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+      // Enable Claude's memory feature (persists user preferences between sessions)
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+    },
+    hooks: {
+      UserPromptSubmit: [
         {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
+          matcher: '',
+          hooks: [
+            {
+              type: 'command',
+              command: '/app/hooks/self-improvement/activator.sh',
+            },
+          ],
         },
-        null,
-        2,
-      ) + '\n',
-    );
+      ],
+      PostToolUse: [
+        {
+          matcher: 'Bash',
+          hooks: [
+            {
+              type: 'command',
+              command: '/app/hooks/self-improvement/error-detector.sh',
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  // Merge with existing settings (preserve any custom keys)
+  let existing: Record<string, unknown> = {};
+  if (fs.existsSync(settingsFile)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    } catch {
+      /* corrupt file, overwrite */
+    }
   }
+  const merged = { ...existing, ...desiredSettings };
+  fs.writeFileSync(settingsFile, JSON.stringify(merged, null, 2) + '\n');
 
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
@@ -304,6 +330,24 @@ export async function runContainerAgent(
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
+
+  // Initialize .learnings/ for self-improvement tracking
+  const learningsDir = path.join(groupDir, '.learnings');
+  if (!fs.existsSync(learningsDir)) {
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(learningsDir, 'LEARNINGS.md'),
+      '# Learnings Log\n\nCaptured learnings, corrections, and discoveries.\n\n---\n',
+    );
+    fs.writeFileSync(
+      path.join(learningsDir, 'ERRORS.md'),
+      '# Errors Log\n\nCommand failures, exceptions, and unexpected behaviors.\n\n---\n',
+    );
+    fs.writeFileSync(
+      path.join(learningsDir, 'FEATURE_REQUESTS.md'),
+      "# Feature Requests\n\nCapabilities requested by user that don't currently exist.\n\n---\n",
+    );
+  }
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
