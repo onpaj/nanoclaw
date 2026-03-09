@@ -55,6 +55,10 @@ RUN npm run build
 COPY skills/icloud-caldav/icloud-cal /usr/local/bin/icloud-cal
 RUN chmod +x /usr/local/bin/icloud-cal
 
+# Copy self-improvement hooks
+COPY hooks/ /app/hooks/
+RUN chmod +x /app/hooks/self-improvement/*.sh
+
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
