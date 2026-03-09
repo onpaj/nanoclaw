@@ -1,0 +1,18 @@
+skill: add-icloud-caldav
+version: 1.0.0
+description: "Add iCloud Calendar integration via CalDAV (tsdav). CLI tool for container agents."
+core_version: 1.2.12
+adds:
+  - container/skills/icloud-caldav/icloud-cal
+  - container/skills/icloud-caldav/SKILL.md
+modifies:
+  - container/Dockerfile
+  - src/container-runner.ts
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - APPLE_ID
+    - APPLE_APP_PASS
+conflicts: []
+depends: []
+test: "npx vitest run --config vitest.skills.config.ts .claude/skills/add-icloud-caldav/tests/icloud-caldav.test.ts"

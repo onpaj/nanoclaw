@@ -1,0 +1,252 @@
+#!/usr/bin/env node
+/**
+ * icloud-cal — iCloud Calendar CLI for NanoClaw agents
+ *
+ * Usage:
+ *   icloud-cal list-calendars
+ *   icloud-cal today
+ *   icloud-cal tomorrow
+ *   icloud-cal week
+ *   icloud-cal events [--days N] [--calendar NAME]
+ *
+ * Reads APPLE_ID and APPLE_APP_PASS from environment.
+ * Outputs JSON to stdout, errors to stderr.
+ */
+
+const { DAVClient } = require('tsdav');
+const ICAL = require('ical.js');
+
+const APPLE_ID = process.env.APPLE_ID;
+const APPLE_APP_PASS = process.env.APPLE_APP_PASS;
+
+if (!APPLE_ID || !APPLE_APP_PASS) {
+  console.error('Error: APPLE_ID and APPLE_APP_PASS environment variables are required.');
+  process.exit(1);
+}
+
+// Parse CLI args
+const args = process.argv.slice(2);
+const command = args[0];
+
+if (!command || command === '--help' || command === '-h') {
+  console.error(`
+icloud-cal — iCloud Calendar CLI
+
+Commands:
+  list-calendars              List all iCloud calendars
+  today                       Events for today
+  tomorrow                    Events for tomorrow
+  week                        Events for the next 7 days
+  events [--days N]           Events for next N days (default: 7)
+         [--calendar NAME]    Filter by calendar display name
+
+Options:
+  --help, -h                  Show this help
+`);
+  process.exit(0);
+}
+
+function parseArg(flag, defaultVal) {
+  const idx = args.indexOf(flag);
+  if (idx === -1) return defaultVal;
+  return args[idx + 1];
+}
+
+// Date helpers
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfDay(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
+function toLocalISOString(date) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+// Parse a single VCALENDAR ICS string and extract VEVENT objects in a time range
+function parseEvents(icsData, rangeStart, rangeEnd, calendarName) {
+  const events = [];
+
+  let jcal;
+  try {
+    jcal = ICAL.parse(icsData);
+  } catch (e) {
+    return events; // skip malformed ICS
+  }
+
+  const comp = new ICAL.Component(jcal);
+  const vevents = comp.getAllSubcomponents('vevent');
+
+  for (const vevent of vevents) {
+    try {
+      const event = new ICAL.Event(vevent);
+
+      if (event.isRecurring()) {
+        // Expand recurring events within range
+        const iter = event.iterator();
+        let next;
+        let safetyCount = 0;
+        while ((next = iter.next()) && safetyCount++ < 500) {
+          const startDate = next.toJSDate();
+          if (startDate > rangeEnd) break;
+          if (startDate < rangeStart) continue;
+
+          const duration = event.duration;
+          const endDate = new Date(startDate.getTime() + duration.toSeconds() * 1000);
+
+          events.push(formatEvent(event, startDate, endDate, calendarName));
+        }
+      } else {
+        const startDate = event.startDate.toJSDate();
+        const endDate = event.endDate ? event.endDate.toJSDate() : startDate;
+
+        if (startDate > rangeEnd || endDate < rangeStart) continue;
+
+        events.push(formatEvent(event, startDate, endDate, calendarName));
+      }
+    } catch (e) {
+      // skip events that fail to parse
+    }
+  }
+
+  return events;
+}
+
+function formatEvent(event, startDate, endDate, calendarName) {
+  const isAllDay = event.startDate.isDate;
+
+  return {
+    title: event.summary || '(bez názvu)',
+    start: toLocalISOString(startDate),
+    end: toLocalISOString(endDate),
+    calendar: calendarName,
+    location: event.location || null,
+    notes: event.description || null,
+    allDay: isAllDay,
+    recurring: event.isRecurring(),
+  };
+}
+
+async function getClient() {
+  const client = new DAVClient({
+    serverUrl: 'https://caldav.icloud.com',
+    credentials: {
+      username: APPLE_ID,
+      password: APPLE_APP_PASS,
+    },
+    authMethod: 'Basic',
+    defaultAccountType: 'caldav',
+  });
+  await client.login();
+  return client;
+}
+
+async function listCalendars() {
+  const client = await getClient();
+  const calendars = await client.fetchCalendars();
+  return calendars.map(cal => ({
+    displayName: cal.displayName || '(unnamed)',
+    url: cal.url,
+    color: cal.calendarColor || null,
+  }));
+}
+
+async function fetchEvents(rangeStart, rangeEnd, calendarFilter) {
+  const client = await getClient();
+  const calendars = await client.fetchCalendars();
+
+  const filtered = calendarFilter
+    ? calendars.filter(c => (c.displayName || '').toLowerCase().includes(calendarFilter.toLowerCase()))
+    : calendars;
+
+  if (calendarFilter && filtered.length === 0) {
+    console.error(`Warning: No calendar matching "${calendarFilter}" found.`);
+  }
+
+  const allEvents = [];
+
+  for (const calendar of filtered) {
+    let objects;
+    try {
+      objects = await client.fetchCalendarObjects({
+        calendar,
+        timeRange: {
+          start: rangeStart.toISOString(),
+          end: rangeEnd.toISOString(),
+        },
+      });
+    } catch (e) {
+      // Some calendars (e.g. subscribed) may not support time-range queries — skip them
+      continue;
+    }
+
+    for (const obj of objects) {
+      if (!obj.data) continue;
+      const calName = calendar.displayName || '(unnamed)';
+      const events = parseEvents(obj.data, rangeStart, rangeEnd, calName);
+      allEvents.push(...events);
+    }
+  }
+
+  // Sort by start time
+  allEvents.sort((a, b) => a.start.localeCompare(b.start));
+
+  return allEvents;
+}
+
+// Main
+(async () => {
+  try {
+    if (command === 'list-calendars') {
+      const calendars = await listCalendars();
+      console.log(JSON.stringify(calendars, null, 2));
+      return;
+    }
+
+    let rangeStart, rangeEnd;
+    const now = new Date();
+
+    if (command === 'today') {
+      rangeStart = startOfDay(now);
+      rangeEnd = endOfDay(now);
+    } else if (command === 'tomorrow') {
+      const tomorrow = addDays(now, 1);
+      rangeStart = startOfDay(tomorrow);
+      rangeEnd = endOfDay(tomorrow);
+    } else if (command === 'week') {
+      rangeStart = startOfDay(now);
+      rangeEnd = endOfDay(addDays(now, 7));
+    } else if (command === 'events') {
+      const days = parseInt(parseArg('--days', '7'), 10);
+      rangeStart = startOfDay(now);
+      rangeEnd = endOfDay(addDays(now, days));
+    } else {
+      console.error(`Unknown command: ${command}. Run icloud-cal --help for usage.`);
+      process.exit(1);
+    }
+
+    const calendarFilter = parseArg('--calendar', null);
+    const events = await fetchEvents(rangeStart, rangeEnd, calendarFilter);
+    console.log(JSON.stringify(events, null, 2));
+
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    if (err.message && err.message.includes('401')) {
+      console.error('Hint: Check APPLE_ID and APPLE_APP_PASS. Use an app-specific password from account.apple.com.');
+    }
+    process.exit(1);
+  }
+})();

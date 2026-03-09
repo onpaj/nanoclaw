@@ -235,6 +235,8 @@ function readSecrets(): Record<string, string> {
     'MS365_CLIENT_ID',
     'MS365_CLIENT_SECRET',
     'MS365_TENANT_ID',
+    'APPLE_ID',
+    'APPLE_APP_PASS',
   ]);
 }
 

@@ -87,6 +87,52 @@ Channels --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Respon
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 
+### Skill Package Structure
+
+Skills live in `.claude/skills/<skill-name>/` and are applied via the skills engine. Structure:
+
+```
+.claude/skills/add-<name>/
+├── SKILL.md                        # Instructions for Claude Code (phased install guide)
+├── manifest.yaml                   # Metadata: adds, modifies, deps, npm packages, env vars
+├── add/                            # New files (paths mirror project root)
+│   └── src/channels/foo.ts         # Copied to src/channels/foo.ts
+├── modify/                         # Changes to existing files
+│   └── src/channels/
+│       ├── index.ts                # Target state of the file after merge
+│       └── index.ts.intent.md      # Intent description (for conflict resolution)
+└── tests/                          # Tests that validate the skill package itself
+    └── foo.test.ts
+```
+
+**manifest.yaml** declares everything declaratively:
+
+```yaml
+skill: <name>
+version: 1.0.0
+description: "..."
+core_version: 0.1.0
+adds:                              # New files to create
+  - src/channels/foo.ts
+  - src/channels/foo.test.ts
+modifies:                          # Existing files to merge into
+  - src/channels/index.ts
+structured:
+  npm_dependencies:                # Auto-installed
+    "some-package": "^1.0.0"
+  env_additions:                   # Required env vars
+    - SOME_TOKEN
+conflicts: []                      # Mutually exclusive skills
+depends: []                        # Required prerequisite skills
+test: "npx vitest run src/channels/foo.test.ts"
+```
+
+**SKILL.md** phases: (1) Pre-flight — check `.nanoclaw/state.yaml` if already applied, (2) Apply — run `npx tsx scripts/apply-skill.ts .claude/skills/add-<name>`, (3) Setup — interactive config (tokens, env), (4) Registration — register groups/channels, (5) Verify.
+
+**modify/ files**: contain the **target state** of the file after applying the skill, not a diff. The companion `.intent.md` describes the change's purpose so Claude can resolve merge conflicts intelligently.
+
+**Apply command:** `npx tsx scripts/apply-skill.ts .claude/skills/add-<name>` — copies `add/` files, merges `modify/` files, installs npm deps, records state in `.nanoclaw/state.yaml`. The skills engine lives in `skills-engine/`.
+
 ## Troubleshooting
 
 **WhatsApp not connecting after upgrade:** WhatsApp is now a separate skill, not bundled in core. Run `/add-whatsapp` to install it. Existing auth credentials and groups are preserved.
