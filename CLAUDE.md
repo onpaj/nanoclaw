@@ -8,6 +8,10 @@ Personal Claude assistant. Single Node.js process with skill-based channel syste
 
 See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
 
+## Workflow
+
+After completing each feature or logical unit of work, always commit all related changes and push to `main`. Don't wait for the user to ask — commit and push proactively once the feature is done and verified.
+
 ## Development Commands
 
 Run commands directly—don't tell the user to run them.

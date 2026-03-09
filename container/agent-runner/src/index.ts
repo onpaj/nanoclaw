@@ -27,6 +27,7 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  secrets?: Record<string, string>;
 }
 
 interface ContainerOutput {
@@ -494,9 +495,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
-  // No real secrets exist in the container environment.
+  // Build SDK env: merge secrets from stdin into the environment.
+  // Secrets passed via containerInput.secrets are added to sdkEnv for the SDK
+  // and selectively to process.env for CLI tools (e.g. icloud-cal, ms365).
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  for (const [key, value] of Object.entries(containerInput.secrets || {})) {
+    sdkEnv[key] = value;
+  }
+  // Export tool-facing secrets to process.env so Bash subprocesses can read them.
+  // Only non-API secrets (APPLE_*, MS365_*) — API keys stay in sdkEnv only.
+  const TOOL_SECRET_PREFIXES = ['APPLE_', 'MS365_'];
+  for (const [key, value] of Object.entries(containerInput.secrets || {})) {
+    if (TOOL_SECRET_PREFIXES.some(p => key.startsWith(p))) {
+      process.env[key] = value;
+    }
+  }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');

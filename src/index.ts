@@ -206,6 +206,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   queue.registerInputCallback(chatJid, resetIdleTimer);
 
   await channel.setTyping?.(chatJid, true);
+
+  // Add ⏳ reaction to the last trigger message so users can see the agent is working
+  const triggerMessageId = missedMessages[missedMessages.length - 1].id;
+  await channel.addReaction?.(chatJid, triggerMessageId, 'hourglass_flowing_sand');
+
   let hadError = false;
   let outputSentToUser = false;
 
@@ -239,6 +244,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
   queue.clearInputCallback(chatJid);
+
+  // Replace ⏳ with ✅ or ❌ based on outcome
+  await channel.removeReaction?.(chatJid, triggerMessageId, 'hourglass_flowing_sand');
+  if (output === 'error' || hadError) {
+    await channel.addReaction?.(chatJid, triggerMessageId, 'x');
+  } else {
+    await channel.addReaction?.(chatJid, triggerMessageId, 'white_check_mark');
+  }
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —

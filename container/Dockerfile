@@ -33,6 +33,9 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 # Install agent-browser and claude-code globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code @softeria/ms-365-mcp-server
 
+# Install iCloud CalDAV dependencies globally
+RUN npm install -g tsdav ical.js
+
 # Create app directory
 WORKDIR /app
 
@@ -47,6 +50,10 @@ COPY agent-runner/ ./
 
 # Build TypeScript
 RUN npm run build
+
+# Install icloud-cal CLI
+COPY skills/icloud-caldav/icloud-cal /usr/local/bin/icloud-cal
+RUN chmod +x /usr/local/bin/icloud-cal
 
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input

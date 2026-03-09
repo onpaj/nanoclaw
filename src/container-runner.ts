@@ -235,6 +235,8 @@ function readSecrets(): Record<string, string> {
     'MS365_CLIENT_ID',
     'MS365_CLIENT_SECRET',
     'MS365_TENANT_ID',
+    'APPLE_ID',
+    'APPLE_APP_PASS',
   ]);
 }
 
@@ -344,7 +346,10 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
+    // Inject secrets into input for the container (passed via stdin, never on disk)
+    const secrets = readSecrets();
+    const inputWithSecrets = { ...input, secrets };
+    container.stdin.write(JSON.stringify(inputWithSecrets));
     container.stdin.end();
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
