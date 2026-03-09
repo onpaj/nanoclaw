@@ -411,16 +411,16 @@ export async function runContainerAgent(
         'hourglass',
       ];
       const intervalMs = heartbeat.intervalMs ?? 10_000;
-      let emojiIndex = 0;
+      let currentIdx = 0;
       let swapping = false;
 
       heartbeatInterval = setInterval(async () => {
         if (swapping) return;
         swapping = true;
         try {
-          const currentEmoji = emojis[emojiIndex % 2];
-          const nextEmoji = emojis[(emojiIndex + 1) % 2];
-          emojiIndex++;
+          const currentEmoji = emojis[currentIdx];
+          currentIdx = (currentIdx + 1) % emojis.length;
+          const nextEmoji = emojis[currentIdx];
 
           await heartbeat.channel.removeReaction?.(
             heartbeat.chatJid,
