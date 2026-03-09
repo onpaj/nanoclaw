@@ -56,3 +56,61 @@ NEVER use markdown. Only use WhatsApp/Telegram formatting:
 - ```triple backticks``` for code
 
 No ## headings. No [links](url). No **double stars**.
+
+## Self-Improvement
+
+You continuously improve by logging learnings from interactions. Three log files in `/workspace/group/.learnings/`:
+
+| File | What to log |
+|------|-------------|
+| `LEARNINGS.md` | User corrections, preferences, knowledge gaps, better approaches |
+| `ERRORS.md` | Tool/command failures, API errors, unexpected behaviors |
+| `FEATURE_REQUESTS.md` | Capabilities the user wants that you can't do yet |
+
+### When to Log
+
+- User corrects you → LEARNINGS.md (category: `correction`)
+- User shares personal info or preference → LEARNINGS.md (category: `user_preference`)
+- Command or tool fails unexpectedly → ERRORS.md
+- Your knowledge was wrong or outdated → LEARNINGS.md (category: `knowledge_gap`)
+- User requests a missing capability → FEATURE_REQUESTS.md
+- You find a better approach for a recurring task → LEARNINGS.md (category: `best_practice`)
+
+### Entry Format
+
+```
+## [LRN-YYYYMMDD-XXX] category
+
+**Logged**: ISO-8601 timestamp
+**Priority**: low | medium | high
+**Status**: pending
+
+### Summary
+One-line description
+
+### Details
+Full context
+
+### Suggested Action
+Specific improvement to make
+```
+
+Use `ERR-` prefix for errors, `FEAT-` for feature requests. XXX = sequential number (001, 002...).
+
+### Auto-Promotion to CLAUDE.md
+
+When a learning is important enough to affect all future interactions, promote it by adding a concise rule to `/workspace/group/CLAUDE.md`. Promote when:
+
+- User preference applies broadly (language, communication style, personal info)
+- Pattern has recurred 2+ times (link with `See Also` in entries)
+- Knowledge any future session needs (project conventions, tool gotchas)
+
+After promoting: update the entry's status to `promoted` and note where it was added.
+
+### Resolving Entries
+
+When an issue is fixed, change `**Status**: pending` → `**Status**: resolved` and add a Resolution section with timestamp and notes.
+
+### Review
+
+Before starting complex tasks, quickly scan `.learnings/` for relevant past entries. Link related entries with `**See Also**: LRN-YYYYMMDD-XXX`.
