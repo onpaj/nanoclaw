@@ -17,6 +17,7 @@ import {
 } from './channels/registry.js';
 import {
   ContainerOutput,
+  HeartbeatConfig,
   runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
@@ -221,6 +222,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  // Build heartbeat config if channel supports reactions
+  const heartbeatConfig: HeartbeatConfig | undefined =
+    channel.addReaction && channel.removeReaction
+      ? { channel, chatJid, messageId: triggerMessageId }
+      : undefined;
+
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
@@ -239,9 +246,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         if (pipedIds && pipedIds.length > 0) {
           const ids = pipedIds.splice(0);
           for (const msgId of ids) {
-            channel.removeReaction?.(chatJid, msgId, 'hourglass_flowing_sand')
+            channel
+              .removeReaction?.(chatJid, msgId, 'hourglass_flowing_sand')
               ?.catch(() => {});
-            channel.addReaction?.(chatJid, msgId, 'white_check_mark')
+            channel
+              .addReaction?.(chatJid, msgId, 'white_check_mark')
               ?.catch(() => {});
           }
         }
@@ -257,19 +266,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
-  });
+  }, heartbeatConfig);
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
   queue.clearInputCallback(chatJid);
 
-  // Replace ⏳ with ✅ or ❌ based on outcome
-  const completionEmoji = output === 'error' || hadError ? 'x' : 'white_check_mark';
+  // Replace ⏳/⌛ with ✅ or ❌ based on outcome
+  // Remove both possible emojis since we don't know which the heartbeat last set
+  const completionEmoji =
+    output === 'error' || hadError ? 'x' : 'white_check_mark';
   await channel.removeReaction?.(
     chatJid,
     triggerMessageId,
     'hourglass_flowing_sand',
   );
+  await channel.removeReaction?.(chatJid, triggerMessageId, 'hourglass');
   await channel.addReaction?.(chatJid, triggerMessageId, completionEmoji);
 
   // Also clean up any piped message reactions that weren't cleared by output
@@ -322,6 +334,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  heartbeat?: HeartbeatConfig,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
@@ -376,6 +389,7 @@ async function runAgent(
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
+      heartbeat,
     );
 
     if (output.newSessionId) {
@@ -496,7 +510,11 @@ async function startMessageLoop(): Promise<void> {
             }
             pipedReactionIds.get(chatJid)!.push(pipedTriggerMsgId);
             channel
-              .addReaction?.(chatJid, pipedTriggerMsgId, 'hourglass_flowing_sand')
+              .addReaction?.(
+                chatJid,
+                pipedTriggerMsgId,
+                'hourglass_flowing_sand',
+              )
               ?.catch((err) =>
                 logger.warn({ chatJid, err }, 'Failed to add piped reaction'),
               );
