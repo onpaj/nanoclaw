@@ -209,7 +209,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Add ⏳ reaction to the last trigger message so users can see the agent is working
   const triggerMessageId = missedMessages[missedMessages.length - 1].id;
-  await channel.addReaction?.(chatJid, triggerMessageId, 'hourglass_flowing_sand');
+  await channel.addReaction?.(
+    chatJid,
+    triggerMessageId,
+    'hourglass_flowing_sand',
+  );
 
   let hadError = false;
   let outputSentToUser = false;
@@ -246,7 +250,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   queue.clearInputCallback(chatJid);
 
   // Replace ⏳ with ✅ or ❌ based on outcome
-  await channel.removeReaction?.(chatJid, triggerMessageId, 'hourglass_flowing_sand');
+  await channel.removeReaction?.(
+    chatJid,
+    triggerMessageId,
+    'hourglass_flowing_sand',
+  );
   if (output === 'error' || hadError) {
     await channel.addReaction?.(chatJid, triggerMessageId, 'x');
   } else {

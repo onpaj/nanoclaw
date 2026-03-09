@@ -210,7 +210,11 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
-  async addReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+  async addReaction(
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
     try {
       await this.app.client.reactions.add({
@@ -218,14 +222,26 @@ export class SlackChannel implements Channel {
         timestamp: messageId,
         name: emoji,
       });
+      logger.debug({ jid, messageId, emoji }, 'Slack reaction added');
     } catch (err: unknown) {
       // already_reacted is harmless — ignore it
-      if ((err as { data?: { error?: string } })?.data?.error === 'already_reacted') return;
-      logger.warn({ jid, messageId, emoji, err }, 'Failed to add Slack reaction');
+      if (
+        (err as { data?: { error?: string } })?.data?.error ===
+        'already_reacted'
+      )
+        return;
+      logger.warn(
+        { jid, messageId, emoji, err },
+        'Failed to add Slack reaction',
+      );
     }
   }
 
-  async removeReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+  async removeReaction(
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
     try {
       await this.app.client.reactions.remove({
@@ -235,8 +251,12 @@ export class SlackChannel implements Channel {
       });
     } catch (err: unknown) {
       // no_reaction means it was already removed — harmless
-      if ((err as { data?: { error?: string } })?.data?.error === 'no_reaction') return;
-      logger.warn({ jid, messageId, emoji, err }, 'Failed to remove Slack reaction');
+      if ((err as { data?: { error?: string } })?.data?.error === 'no_reaction')
+        return;
+      logger.warn(
+        { jid, messageId, emoji, err },
+        'Failed to remove Slack reaction',
+      );
     }
   }
 
