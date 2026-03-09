@@ -504,7 +504,7 @@ async function main(): Promise<void> {
   }
   // Export tool-facing secrets to process.env so Bash subprocesses can read them.
   // Only non-API secrets (APPLE_*, MS365_*) — API keys stay in sdkEnv only.
-  const TOOL_SECRET_PREFIXES = ['APPLE_', 'MS365_'];
+  const TOOL_SECRET_PREFIXES = ['APPLE_', 'MS365_', 'HA_'];
   for (const [key, value] of Object.entries(containerInput.secrets || {})) {
     if (TOOL_SECRET_PREFIXES.some(p => key.startsWith(p))) {
       process.env[key] = value;

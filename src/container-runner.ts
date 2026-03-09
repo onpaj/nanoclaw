@@ -237,6 +237,8 @@ function readSecrets(): Record<string, string> {
     'MS365_TENANT_ID',
     'APPLE_ID',
     'APPLE_APP_PASS',
+    'HA_SERVER',
+    'HA_TOKEN',
   ]);
 }
 
