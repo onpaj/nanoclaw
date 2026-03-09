@@ -28,9 +28,6 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
-// TTL for event deduplication cache — 5 minutes covers typical Socket Mode reconnect windows
-const EVENT_DEDUP_TTL_MS = 5 * 60 * 1000;
-
 export class SlackChannel implements Channel {
   name = 'slack';
 
@@ -40,10 +37,6 @@ export class SlackChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
-  private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
-  private reconnecting = false;
-  // event_id → received timestamp; prevents duplicate processing on Socket Mode reconnects
-  private seenEventIds = new Map<string, number>();
 
   private opts: SlackChannelOpts;
 
@@ -72,40 +65,13 @@ export class SlackChannel implements Channel {
     this.setupEventHandlers();
   }
 
-  /**
-   * Returns true if this event_id was already seen (duplicate).
-   * Prunes stale entries older than EVENT_DEDUP_TTL_MS on each call.
-   */
-  private isDuplicateEvent(eventId: string | undefined): boolean {
-    if (!eventId) return false;
-    const now = Date.now();
-    // Prune stale entries
-    for (const [id, ts] of this.seenEventIds) {
-      if (now - ts > EVENT_DEDUP_TTL_MS) this.seenEventIds.delete(id);
-    }
-    if (this.seenEventIds.has(eventId)) return true;
-    this.seenEventIds.set(eventId, now);
-    return false;
-  }
-
   private setupEventHandlers(): void {
     // Use app.event('message') instead of app.message() to capture all
     // message subtypes including bot_message (needed to track our own output)
-    this.app.event('message', async ({ event, body }) => {
-      // Deduplicate by event_id — Slack Socket Mode may re-deliver events
-      // after a reconnect. Bolt has a short internal window; this extends it.
-      const eventId = (body as { event_id?: string }).event_id;
-      const subtype = (event as { subtype?: string }).subtype;
-      logger.info(
-        { eventId, subtype, channel: (event as { channel?: string }).channel },
-        'Slack event received',
-      );
-      if (this.isDuplicateEvent(eventId)) {
-        logger.info({ eventId }, 'Dropping duplicate Slack event');
-        return;
-      }
+    this.app.event('message', async ({ event }) => {
       // Bolt's event type is the full MessageEvent union (17+ subtypes).
       // We filter on subtype first, then narrow to the two types we handle.
+      const subtype = (event as { subtype?: string }).subtype;
       if (subtype && subtype !== 'bot_message') return;
 
       // After filtering, event is either GenericMessageEvent or BotMessageEvent
@@ -128,7 +94,8 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
 
-      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage =
+        !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
@@ -143,13 +110,10 @@ export class SlackChannel implements Channel {
       // Translate Slack <@UBOTID> mentions into TRIGGER_PATTERN format.
       // Slack encodes @mentions as <@U12345>, which won't match TRIGGER_PATTERN
       // (e.g., ^@<ASSISTANT_NAME>\b), so we prepend the trigger when the bot is @mentioned.
-      let content = msg.text ?? '';
+      let content = msg.text;
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (
-          content.includes(mentionPattern) &&
-          !TRIGGER_PATTERN.test(content)
-        ) {
+        if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
       }
@@ -178,7 +142,10 @@ export class SlackChannel implements Channel {
       this.botUserId = auth.user_id as string;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
-      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
+      logger.warn(
+        { err },
+        'Connected to Slack but failed to get bot user ID',
+      );
     }
 
     this.connected = true;
@@ -188,31 +155,6 @@ export class SlackChannel implements Channel {
 
     // Sync channel names on startup
     await this.syncChannelMetadata();
-
-    // Watchdog: ping every 5 minutes, reconnect if Slack API is unreachable
-    this.healthCheckInterval = setInterval(
-      () => this.checkConnection(),
-      5 * 60 * 1000,
-    );
-  }
-
-  private async checkConnection(): Promise<void> {
-    if (this.reconnecting) return;
-    try {
-      await this.app.client.auth.test();
-    } catch (err) {
-      logger.warn({ err }, 'Slack health check failed, reconnecting...');
-      this.reconnecting = true;
-      try {
-        await this.app.stop();
-        await this.app.start();
-        logger.info('Slack reconnected');
-      } catch (reconnErr) {
-        logger.error({ err: reconnErr }, 'Slack reconnect failed');
-      } finally {
-        this.reconnecting = false;
-      }
-    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -259,10 +201,6 @@ export class SlackChannel implements Channel {
 
   async disconnect(): Promise<void> {
     this.connected = false;
-    if (this.healthCheckInterval) {
-      clearInterval(this.healthCheckInterval);
-      this.healthCheckInterval = null;
-    }
     await this.app.stop();
   }
 
@@ -307,7 +245,9 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async resolveUserName(userId: string): Promise<string | undefined> {
+  private async resolveUserName(
+    userId: string,
+  ): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);
