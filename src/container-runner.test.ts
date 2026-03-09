@@ -86,7 +86,11 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  runContainerAgent,
+  ContainerOutput,
+  HeartbeatConfig,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -206,5 +210,142 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('container-runner heartbeat', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function makeHeartbeat() {
+    const channel = {
+      addReaction: vi.fn(async () => {}),
+      removeReaction: vi.fn(async () => {}),
+    };
+    return {
+      channel,
+      chatJid: 'test@g.us',
+      messageId: 'msg-1',
+      intervalMs: 1000,
+      emojis: ['hourglass_flowing_sand', 'hourglass'] as [string, string],
+    };
+  }
+
+  it('rotates emoji reactions every interval', async () => {
+    const hb = makeHeartbeat();
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      undefined,
+      hb,
+    );
+
+    // First tick at 1000ms
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(hb.channel.removeReaction).toHaveBeenCalledTimes(1);
+    expect(hb.channel.removeReaction).toHaveBeenCalledWith(
+      'test@g.us',
+      'msg-1',
+      'hourglass_flowing_sand',
+    );
+    expect(hb.channel.addReaction).toHaveBeenCalledTimes(1);
+    expect(hb.channel.addReaction).toHaveBeenCalledWith(
+      'test@g.us',
+      'msg-1',
+      'hourglass',
+    );
+
+    // Second tick at 2000ms — should alternate back
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(hb.channel.removeReaction).toHaveBeenCalledTimes(2);
+    expect(hb.channel.removeReaction).toHaveBeenLastCalledWith(
+      'test@g.us',
+      'msg-1',
+      'hourglass',
+    );
+    expect(hb.channel.addReaction).toHaveBeenCalledTimes(2);
+    expect(hb.channel.addReaction).toHaveBeenLastCalledWith(
+      'test@g.us',
+      'msg-1',
+      'hourglass_flowing_sand',
+    );
+
+    // Close container to resolve promise
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+  });
+
+  it('stops heartbeat on container close', async () => {
+    const hb = makeHeartbeat();
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      undefined,
+      hb,
+    );
+
+    // One tick
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(hb.channel.addReaction).toHaveBeenCalledTimes(1);
+
+    // Close container
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // More time passes — no more calls
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(hb.channel.addReaction).toHaveBeenCalledTimes(1);
+
+    await resultPromise;
+  });
+
+  it('skips tick if previous swap is still in-flight', async () => {
+    // addReaction hangs forever (never resolves)
+    let resolveAdd!: () => void;
+    const hb = makeHeartbeat();
+    hb.channel.addReaction = vi.fn(
+      () => new Promise<void>((r) => (resolveAdd = r)),
+    );
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      undefined,
+      hb,
+    );
+
+    // First tick fires, removeReaction completes, addReaction hangs
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(hb.channel.removeReaction).toHaveBeenCalledTimes(1);
+    expect(hb.channel.addReaction).toHaveBeenCalledTimes(1);
+
+    // Second tick fires while first is still in-flight — should be skipped
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(hb.channel.removeReaction).toHaveBeenCalledTimes(1);
+    expect(hb.channel.addReaction).toHaveBeenCalledTimes(1);
+
+    // Unblock the first swap
+    resolveAdd();
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Third tick should now work
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(hb.channel.removeReaction).toHaveBeenCalledTimes(2);
+    expect(hb.channel.addReaction).toHaveBeenCalledTimes(2);
+
+    // Clean up
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
   });
 });
