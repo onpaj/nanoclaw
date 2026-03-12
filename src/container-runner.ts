@@ -51,21 +51,6 @@ export interface ContainerOutput {
   error?: string;
 }
 
-export interface HeartbeatConfig {
-  channel: {
-    addReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
-    removeReaction?(
-      jid: string,
-      messageId: string,
-      emoji: string,
-    ): Promise<void>;
-  };
-  chatJid: string;
-  messageId: string;
-  intervalMs?: number; // default 10_000
-  emojis?: [string, string]; // default ['hourglass_flowing_sand', 'hourglass']
-}
-
 interface VolumeMount {
   hostPath: string;
   containerPath: string;
@@ -340,7 +325,6 @@ export async function runContainerAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-  heartbeat?: HeartbeatConfig,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -402,46 +386,6 @@ export async function runContainerAgent(
     });
 
     onProcess(container, containerName);
-
-    // Heartbeat: alternate emoji reactions to show the agent is alive
-    let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
-    if (heartbeat) {
-      const emojis = heartbeat.emojis ?? [
-        'hourglass_flowing_sand',
-        'hourglass',
-      ];
-      const intervalMs = heartbeat.intervalMs ?? 10_000;
-      let currentIdx = 0;
-      let swapping = false;
-
-      heartbeatInterval = setInterval(async () => {
-        if (swapping) return;
-        swapping = true;
-        try {
-          const currentEmoji = emojis[currentIdx];
-          currentIdx = (currentIdx + 1) % emojis.length;
-          const nextEmoji = emojis[currentIdx];
-
-          await heartbeat.channel.removeReaction?.(
-            heartbeat.chatJid,
-            heartbeat.messageId,
-            currentEmoji,
-          );
-          await heartbeat.channel.addReaction?.(
-            heartbeat.chatJid,
-            heartbeat.messageId,
-            nextEmoji,
-          );
-        } catch (err) {
-          logger.debug(
-            { error: err },
-            'Heartbeat reaction swap failed (non-fatal)',
-          );
-        } finally {
-          swapping = false;
-        }
-      }, intervalMs);
-    }
 
     let stdout = '';
     let stderr = '';
@@ -567,7 +511,7 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
+
       const duration = Date.now() - startTime;
 
       if (timedOut) {
@@ -763,7 +707,7 @@ export async function runContainerAgent(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
+
       logger.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',

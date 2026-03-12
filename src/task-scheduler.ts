@@ -53,10 +53,9 @@ function setRtcWakeAlarm(nextTaskTime: string | null): void {
   } catch {
     // Direct write failed, try rtcwake via sudo (NOPASSWD required)
     try {
-      execSync(
-        `sudo -n rtcwake -m no -t ${wakeAt} 2>/dev/null`,
-        { timeout: 5000 },
-      );
+      execSync(`sudo -n rtcwake -m no -t ${wakeAt} 2>/dev/null`, {
+        timeout: 5000,
+      });
       logger.debug(
         { wakeAt: new Date(wakeAt * 1000).toISOString(), nextTaskTime },
         'RTC wake alarm set via rtcwake',
@@ -65,7 +64,7 @@ function setRtcWakeAlarm(nextTaskTime: string | null): void {
       rtcAlarmFailed = true;
       logger.info(
         'RTC wake alarm not available — system may sleep through tasks. ' +
-          'Fix: echo \'rem ALL=(ALL) NOPASSWD: /usr/sbin/rtcwake\' | sudo tee /etc/sudoers.d/nanoclaw-rtcwake',
+          "Fix: echo 'rem ALL=(ALL) NOPASSWD: /usr/sbin/rtcwake' | sudo tee /etc/sudoers.d/nanoclaw-rtcwake",
       );
     }
   }
@@ -333,9 +332,7 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 
         if (sleptThroughTasks && staggerIndex > 0) {
           // Stagger: wait between enqueuing tasks after a sleep gap
-          await new Promise((resolve) =>
-            setTimeout(resolve, STAGGER_DELAY_MS),
-          );
+          await new Promise((resolve) => setTimeout(resolve, STAGGER_DELAY_MS));
         }
 
         deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
