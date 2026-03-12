@@ -465,6 +465,20 @@ export function getDueTasks(): ScheduledTask[] {
     .all(now) as ScheduledTask[];
 }
 
+export function getNextTaskTime(): string | null {
+  const now = new Date().toISOString();
+  const row = db
+    .prepare(
+      `
+    SELECT next_run FROM scheduled_tasks
+    WHERE status = 'active' AND next_run IS NOT NULL AND next_run > ?
+    ORDER BY next_run LIMIT 1
+  `,
+    )
+    .get(now) as { next_run: string } | undefined;
+  return row?.next_run ?? null;
+}
+
 export function updateTaskAfterRun(
   id: string,
   nextRun: string | null,

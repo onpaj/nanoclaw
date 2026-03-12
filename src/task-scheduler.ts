@@ -1,4 +1,4 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, execSync } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
@@ -11,6 +11,7 @@ import {
 import {
   getAllTasks,
   getDueTasks,
+  getNextTaskTime,
   getTaskById,
   logTaskRun,
   updateTask,
@@ -20,6 +21,55 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
+
+/** Delay between enqueuing overdue tasks after a sleep gap (ms). */
+const STAGGER_DELAY_MS = 10_000;
+
+/** If the scheduler loop fires more than this many ms late, we assume the system slept. */
+const SLEEP_DETECTION_THRESHOLD_MS = SCHEDULER_POLL_INTERVAL * 2;
+
+/**
+ * Set an RTC wake alarm so the system wakes from sleep for the next task.
+ * Tries direct sysfs write first, falls back to `rtcwake` via sudo.
+ * Fails silently if not available.
+ */
+let rtcAlarmFailed = false;
+function setRtcWakeAlarm(nextTaskTime: string | null): void {
+  if (!nextTaskTime || rtcAlarmFailed) return;
+
+  const epochSeconds = Math.floor(new Date(nextTaskTime).getTime() / 1000);
+  // Wake 30s early to give the system time to resume before the task is due
+  const wakeAt = epochSeconds - 30;
+  if (wakeAt <= Math.floor(Date.now() / 1000)) return;
+
+  try {
+    // Clear existing alarm, then set new one
+    fs.writeFileSync('/sys/class/rtc/rtc0/wakealarm', '0');
+    fs.writeFileSync('/sys/class/rtc/rtc0/wakealarm', String(wakeAt));
+    logger.debug(
+      { wakeAt: new Date(wakeAt * 1000).toISOString(), nextTaskTime },
+      'RTC wake alarm set',
+    );
+  } catch {
+    // Direct write failed, try rtcwake via sudo (NOPASSWD required)
+    try {
+      execSync(
+        `sudo -n rtcwake -m no -t ${wakeAt} 2>/dev/null`,
+        { timeout: 5000 },
+      );
+      logger.debug(
+        { wakeAt: new Date(wakeAt * 1000).toISOString(), nextTaskTime },
+        'RTC wake alarm set via rtcwake',
+      );
+    } catch {
+      rtcAlarmFailed = true;
+      logger.info(
+        'RTC wake alarm not available — system may sleep through tasks. ' +
+          'Fix: echo \'rem ALL=(ALL) NOPASSWD: /usr/sbin/rtcwake\' | sudo tee /etc/sudoers.d/nanoclaw-rtcwake',
+      );
+    }
+  }
+}
 
 /**
  * Compute the next run time for a recurring task, anchored to the
@@ -248,13 +298,32 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   schedulerRunning = true;
   logger.info('Scheduler loop started');
 
+  let lastLoopTime = Date.now();
+
   const loop = async () => {
+    const now = Date.now();
+    const elapsed = now - lastLoopTime;
+    const sleptThroughTasks = elapsed > SLEEP_DETECTION_THRESHOLD_MS;
+    lastLoopTime = now;
+
     try {
       const dueTasks = getDueTasks();
       if (dueTasks.length > 0) {
-        logger.info({ count: dueTasks.length }, 'Found due tasks');
+        logger.info(
+          { count: dueTasks.length, sleptThroughTasks },
+          'Found due tasks',
+        );
       }
 
+      if (sleptThroughTasks && dueTasks.length > 1) {
+        // System likely slept — stagger tasks to avoid stampede
+        logger.info(
+          { sleepGapMs: elapsed, taskCount: dueTasks.length },
+          'Sleep gap detected, staggering overdue tasks',
+        );
+      }
+
+      let staggerIndex = 0;
       for (const task of dueTasks) {
         // Re-check task status in case it was paused/cancelled
         const currentTask = getTaskById(task.id);
@@ -262,12 +331,28 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           continue;
         }
 
+        if (sleptThroughTasks && staggerIndex > 0) {
+          // Stagger: wait between enqueuing tasks after a sleep gap
+          await new Promise((resolve) =>
+            setTimeout(resolve, STAGGER_DELAY_MS),
+          );
+        }
+
         deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
           runTask(currentTask, deps),
         );
+        staggerIndex++;
       }
     } catch (err) {
       logger.error({ err }, 'Error in scheduler loop');
+    }
+
+    // Set RTC wake alarm for the next upcoming task
+    try {
+      const nextTime = getNextTaskTime();
+      setRtcWakeAlarm(nextTime);
+    } catch (err) {
+      logger.debug({ err }, 'Failed to set RTC wake alarm');
     }
 
     setTimeout(loop, SCHEDULER_POLL_INTERVAL);
