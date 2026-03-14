@@ -253,6 +253,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
 
     if (result.status === 'success') {
+      // Clear piped hourglass reactions even when result is null (session-update
+      // marker). Without this, a piped message that the agent processes silently
+      // (e.g. tool use only, no text reply) keeps its ⏳ forever.
+      const pipedIds = pipedReactionIds.get(chatJid);
+      if (pipedIds && pipedIds.length > 0) {
+        const ids = pipedIds.splice(0);
+        for (const msgId of ids) {
+          channel
+            .removeReaction?.(chatJid, msgId, 'hourglass_flowing_sand')
+            ?.catch(() => {});
+          channel
+            .addReaction?.(chatJid, msgId, 'white_check_mark')
+            ?.catch(() => {});
+        }
+      }
       queue.notifyIdle(chatJid);
     }
 
