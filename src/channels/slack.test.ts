@@ -32,6 +32,8 @@ type Handler = (...args: any[]) => any;
 
 const appRef = vi.hoisted(() => ({ current: null as any }));
 
+import { EventEmitter } from 'events';
+
 vi.mock('@slack/bolt', () => ({
   App: class MockApp {
     eventHandlers = new Map<string, Handler>();
@@ -56,6 +58,13 @@ vi.mock('@slack/bolt', () => ({
           user: { real_name: 'Alice Smith', name: 'alice' },
         }),
       },
+    };
+
+    // Mock SocketModeReceiver with EventEmitter-based client
+    receiver = {
+      client: Object.assign(new EventEmitter(), {
+        websocket: { isActive: vi.fn().mockReturnValue(true) },
+      }),
     };
 
     constructor(opts: any) {
@@ -857,47 +866,71 @@ describe('SlackChannel', () => {
     });
   });
 
-  // --- Health check & reconnect ---
+  // --- Reconnect ---
 
-  describe('health check reconnect', () => {
-    it('reconnects after consecutive health check failures', async () => {
+  describe('reconnect', () => {
+    it('reconnects when SocketModeClient emits disconnected', async () => {
       vi.useFakeTimers();
       const channel = new SlackChannel(createTestOpts());
       await channel.connect();
+      expect(channel.isConnected()).toBe(true);
 
-      // Simulate health check failures
-      currentApp().client.auth.test.mockRejectedValue(new Error('ECONNRESET'));
+      const oldApp = currentApp();
 
-      // Advance timers to trigger 2 health checks (5 min each)
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      // Simulate SDK giving up on reconnection
+      oldApp.receiver.client.emit('disconnected');
+      expect(channel.isConnected()).toBe(false);
 
-      // connect (1) + 2 health checks + reconnect auth.test = 4 calls
-      expect(currentApp().client.auth.test).toHaveBeenCalledTimes(4);
+      // Wait for reconnect delay (10s)
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // createApp() creates a new App instance — verify it's different and connected
+      expect(currentApp()).not.toBe(oldApp);
+      // New app's auth.test called once during reconnect
+      expect(currentApp().client.auth.test).toHaveBeenCalledTimes(1);
       expect(channel.isConnected()).toBe(true);
 
       await channel.disconnect();
       vi.useRealTimers();
     });
 
-    it('resets failure count on successful health check', async () => {
+    it('reconnects when health check detects inactive WebSocket', async () => {
       vi.useFakeTimers();
       const channel = new SlackChannel(createTestOpts());
       await channel.connect();
 
-      // One failure, then success
-      currentApp()
-        .client.auth.test.mockRejectedValueOnce(new Error('timeout'))
-        .mockResolvedValue({ user_id: 'U_BOT_123' });
+      const oldApp = currentApp();
 
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // fail
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // success — no reconnect
+      // Mark WebSocket as inactive
+      oldApp.receiver.client.websocket.isActive.mockReturnValue(false);
 
-      // connect (1) + 2 health checks = 3 total (no reconnect auth.test)
-      expect(currentApp().client.auth.test).toHaveBeenCalledTimes(3);
+      // Health check fires at 5 min
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      // Then reconnect delay (10s)
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // New app created and connected
+      expect(currentApp()).not.toBe(oldApp);
+      expect(currentApp().client.auth.test).toHaveBeenCalledTimes(1);
       expect(channel.isConnected()).toBe(true);
 
       await channel.disconnect();
+      vi.useRealTimers();
+    });
+
+    it('does not reconnect when shutting down', async () => {
+      vi.useFakeTimers();
+      const channel = new SlackChannel(createTestOpts());
+      await channel.connect();
+
+      // Disconnect (sets shuttingDown=true), then simulate a late disconnected event
+      await channel.disconnect();
+      currentApp().receiver.client.emit('disconnected');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Only the initial connect auth.test — no reconnect attempt
+      expect(currentApp().client.auth.test).toHaveBeenCalledTimes(1);
       vi.useRealTimers();
     });
 

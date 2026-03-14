@@ -17,6 +17,14 @@ import {
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
 
+// Delay before attempting reconnect after WebSocket disconnects.
+// Gives transient issues time to resolve before we recreate the App.
+const RECONNECT_DELAY = 10_000;
+
+// Fallback: if the SDK silently dies without emitting 'disconnected',
+// this periodic check detects it by pinging the WebSocket.
+const HEALTH_CHECK_INTERVAL = 5 * 60 * 1000;
+
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
 // (BotMessageEvent, subtype 'bot_message') so we can track our own output.
@@ -28,23 +36,21 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
-// How often to verify the Slack WebSocket is alive (5 minutes)
-const HEALTH_CHECK_INTERVAL = 5 * 60 * 1000;
-// How many consecutive health check failures before reconnecting
-const MAX_HEALTH_FAILURES = 2;
-
 export class SlackChannel implements Channel {
   name = 'slack';
 
-  private app: App;
+  private app!: App;
+  private botToken: string;
+  private appToken: string;
   private botUserId: string | undefined;
   private connected = false;
+  private shuttingDown = false;
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
   private healthCheckTimer: ReturnType<typeof setInterval> | undefined;
-  private consecutiveFailures = 0;
   private reconnecting = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   private opts: SlackChannelOpts;
 
@@ -54,23 +60,51 @@ export class SlackChannel implements Channel {
     // Read tokens from .env (not process.env — keeps secrets off the environment
     // so they don't leak to child processes, matching NanoClaw's security pattern)
     const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
-    const botToken = env.SLACK_BOT_TOKEN;
-    const appToken = env.SLACK_APP_TOKEN;
+    this.botToken = env.SLACK_BOT_TOKEN!;
+    this.appToken = env.SLACK_APP_TOKEN!;
 
-    if (!botToken || !appToken) {
+    if (!this.botToken || !this.appToken) {
       throw new Error(
         'SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set in .env',
       );
     }
 
+    this.createApp();
+  }
+
+  private createApp(): void {
     this.app = new App({
-      token: botToken,
-      appToken,
+      token: this.botToken,
+      appToken: this.appToken,
       socketMode: true,
       logLevel: LogLevel.ERROR,
     });
 
     this.setupEventHandlers();
+    this.setupSocketListeners();
+  }
+
+  private setupSocketListeners(): void {
+    // Access the SocketModeClient via the receiver to listen for connection events.
+    // When the SDK gives up reconnecting (e.g. HTTP 408 = unrecoverable), it emits
+    // 'disconnected' and stops — we catch that and do a full teardown/recreate.
+    const receiver = (this.app as any).receiver;
+    if (!receiver?.client) return;
+
+    receiver.client.on('disconnected', () => {
+      if (this.shuttingDown) return;
+      logger.warn('Slack SocketMode disconnected — scheduling reconnect');
+      this.connected = false;
+      this.scheduleReconnect();
+    });
+
+    receiver.client.on('reconnecting', () => {
+      logger.info('Slack SocketMode reconnecting (SDK auto-retry)...');
+    });
+
+    receiver.client.on('connected', () => {
+      logger.info('Slack SocketMode connected');
+    });
   }
 
   private setupEventHandlers(): void {
@@ -142,6 +176,7 @@ export class SlackChannel implements Channel {
   }
 
   async connect(): Promise<void> {
+    this.shuttingDown = false;
     await this.app.start();
 
     // Get bot's own user ID for self-message detection.
@@ -156,9 +191,8 @@ export class SlackChannel implements Channel {
     }
 
     this.connected = true;
-    this.consecutiveFailures = 0;
 
-    // Start periodic health checks
+    // Start fallback health check
     this.startHealthCheck();
 
     // Flush any messages queued before connection
@@ -211,43 +245,53 @@ export class SlackChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    this.shuttingDown = true;
     this.connected = false;
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
       this.healthCheckTimer = undefined;
     }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     await this.app.stop();
   }
 
   /**
-   * Periodically call auth.test to verify the WebSocket is alive.
-   * If it fails consecutively, tear down and reconnect.
+   * Fallback health check: if the SDK silently dies without emitting 'disconnected',
+   * we detect it here by checking whether the underlying WebSocket is still active.
+   * The primary reconnect path is the 'disconnected' event listener above.
    */
   private startHealthCheck(): void {
-    this.healthCheckTimer = setInterval(async () => {
-      if (!this.connected || this.reconnecting) return;
+    this.healthCheckTimer = setInterval(() => {
+      if (!this.connected || this.reconnecting || this.shuttingDown) return;
 
-      try {
-        await this.app.client.auth.test();
-        this.consecutiveFailures = 0;
-      } catch (err) {
-        this.consecutiveFailures++;
-        logger.warn(
-          { err: String(err), consecutiveFailures: this.consecutiveFailures },
-          'Slack health check failed',
-        );
-
-        if (this.consecutiveFailures >= MAX_HEALTH_FAILURES) {
-          await this.reconnect();
-        }
+      // Check the actual WebSocket state rather than making HTTP calls.
+      // auth.test uses HTTP (not the WebSocket), so it can succeed even when
+      // the event-receiving WebSocket is dead.
+      const receiver = (this.app as any).receiver;
+      const ws = receiver?.client?.websocket;
+      if (ws && typeof ws.isActive === 'function' && !ws.isActive()) {
+        logger.warn('Slack health check: WebSocket is not active — scheduling reconnect');
+        this.connected = false;
+        this.scheduleReconnect();
       }
     }, HEALTH_CHECK_INTERVAL);
   }
 
+  private scheduleReconnect(): void {
+    if (this.reconnecting || this.shuttingDown || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.reconnect();
+    }, RECONNECT_DELAY);
+  }
+
   private async reconnect(): Promise<void> {
-    if (this.reconnecting) return;
+    if (this.reconnecting || this.shuttingDown) return;
     this.reconnecting = true;
-    logger.info('Slack reconnecting...');
+    logger.info('Slack reconnecting (full teardown)...');
 
     try {
       this.connected = false;
@@ -257,6 +301,9 @@ export class SlackChannel implements Channel {
         // stop may throw if already disconnected
       }
 
+      // Recreate the App entirely — the old SocketModeClient may be in an
+      // unrecoverable state. This re-registers event handlers and socket listeners.
+      this.createApp();
       await this.app.start();
 
       try {
@@ -267,13 +314,13 @@ export class SlackChannel implements Channel {
       }
 
       this.connected = true;
-      this.consecutiveFailures = 0;
       logger.info('Slack reconnected successfully');
 
       await this.flushOutgoingQueue();
     } catch (err) {
-      logger.error({ err: String(err) }, 'Slack reconnect failed');
-      // Will retry on next health check cycle
+      logger.error({ err: String(err) }, 'Slack reconnect failed — will retry');
+      // Schedule another attempt
+      this.scheduleReconnect();
     } finally {
       this.reconnecting = false;
     }
