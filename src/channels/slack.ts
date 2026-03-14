@@ -28,6 +28,11 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+// How often to verify the Slack WebSocket is alive (5 minutes)
+const HEALTH_CHECK_INTERVAL = 5 * 60 * 1000;
+// How many consecutive health check failures before reconnecting
+const MAX_HEALTH_FAILURES = 2;
+
 export class SlackChannel implements Channel {
   name = 'slack';
 
@@ -37,6 +42,9 @@ export class SlackChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
+  private healthCheckTimer: ReturnType<typeof setInterval> | undefined;
+  private consecutiveFailures = 0;
+  private reconnecting = false;
 
   private opts: SlackChannelOpts;
 
@@ -148,6 +156,10 @@ export class SlackChannel implements Channel {
     }
 
     this.connected = true;
+    this.consecutiveFailures = 0;
+
+    // Start periodic health checks
+    this.startHealthCheck();
 
     // Flush any messages queued before connection
     await this.flushOutgoingQueue();
@@ -200,7 +212,71 @@ export class SlackChannel implements Channel {
 
   async disconnect(): Promise<void> {
     this.connected = false;
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = undefined;
+    }
     await this.app.stop();
+  }
+
+  /**
+   * Periodically call auth.test to verify the WebSocket is alive.
+   * If it fails consecutively, tear down and reconnect.
+   */
+  private startHealthCheck(): void {
+    this.healthCheckTimer = setInterval(async () => {
+      if (!this.connected || this.reconnecting) return;
+
+      try {
+        await this.app.client.auth.test();
+        this.consecutiveFailures = 0;
+      } catch (err) {
+        this.consecutiveFailures++;
+        logger.warn(
+          { err: String(err), consecutiveFailures: this.consecutiveFailures },
+          'Slack health check failed',
+        );
+
+        if (this.consecutiveFailures >= MAX_HEALTH_FAILURES) {
+          await this.reconnect();
+        }
+      }
+    }, HEALTH_CHECK_INTERVAL);
+  }
+
+  private async reconnect(): Promise<void> {
+    if (this.reconnecting) return;
+    this.reconnecting = true;
+    logger.info('Slack reconnecting...');
+
+    try {
+      this.connected = false;
+      try {
+        await this.app.stop();
+      } catch {
+        // stop may throw if already disconnected
+      }
+
+      await this.app.start();
+
+      try {
+        const auth = await this.app.client.auth.test();
+        this.botUserId = auth.user_id as string;
+      } catch {
+        // non-fatal: we had the bot ID from initial connect
+      }
+
+      this.connected = true;
+      this.consecutiveFailures = 0;
+      logger.info('Slack reconnected successfully');
+
+      await this.flushOutgoingQueue();
+    } catch (err) {
+      logger.error({ err: String(err) }, 'Slack reconnect failed');
+      // Will retry on next health check cycle
+    } finally {
+      this.reconnecting = false;
+    }
   }
 
   // Slack does not expose a typing indicator API for bots.

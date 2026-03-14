@@ -856,4 +856,63 @@ describe('SlackChannel', () => {
       expect(channel.name).toBe('slack');
     });
   });
+
+  // --- Health check & reconnect ---
+
+  describe('health check reconnect', () => {
+    it('reconnects after consecutive health check failures', async () => {
+      vi.useFakeTimers();
+      const channel = new SlackChannel(createTestOpts());
+      await channel.connect();
+
+      // Simulate health check failures
+      currentApp().client.auth.test.mockRejectedValue(new Error('ECONNRESET'));
+
+      // Advance timers to trigger 2 health checks (5 min each)
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+      // connect (1) + 2 health checks + reconnect auth.test = 4 calls
+      expect(currentApp().client.auth.test).toHaveBeenCalledTimes(4);
+      expect(channel.isConnected()).toBe(true);
+
+      await channel.disconnect();
+      vi.useRealTimers();
+    });
+
+    it('resets failure count on successful health check', async () => {
+      vi.useFakeTimers();
+      const channel = new SlackChannel(createTestOpts());
+      await channel.connect();
+
+      // One failure, then success
+      currentApp()
+        .client.auth.test.mockRejectedValueOnce(new Error('timeout'))
+        .mockResolvedValue({ user_id: 'U_BOT_123' });
+
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // fail
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // success — no reconnect
+
+      // connect (1) + 2 health checks = 3 total (no reconnect auth.test)
+      expect(currentApp().client.auth.test).toHaveBeenCalledTimes(3);
+      expect(channel.isConnected()).toBe(true);
+
+      await channel.disconnect();
+      vi.useRealTimers();
+    });
+
+    it('clears health check timer on disconnect', async () => {
+      vi.useFakeTimers();
+      const channel = new SlackChannel(createTestOpts());
+      await channel.connect();
+      await channel.disconnect();
+
+      // Advance time — no health checks should fire
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+      // Only the initial connect auth.test
+      expect(currentApp().client.auth.test).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+  });
 });
