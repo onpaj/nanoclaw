@@ -365,6 +365,20 @@ export class GroupQueue {
     }
   }
 
+  /**
+   * Returns JIDs of groups that currently have an active (running) container.
+   * Used by the shutdown handler to roll back cursors for in-flight processing.
+   */
+  getActiveGroupJids(): string[] {
+    const jids: string[] = [];
+    for (const [jid, state] of this.groups) {
+      if (state.active && state.process && !state.process.killed) {
+        jids.push(jid);
+      }
+    }
+    return jids;
+  }
+
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 

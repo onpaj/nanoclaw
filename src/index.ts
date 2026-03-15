@@ -63,6 +63,8 @@ let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
+// Track pre-processing cursors so shutdown can roll back in-flight groups
+const preProcessCursors: Record<string, string> = {};
 let messageLoopRunning = false;
 
 const channels: Channel[] = [];
@@ -183,6 +185,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
+  preProcessCursors[chatJid] = previousCursor;
   lastAgentTimestamp[chatJid] =
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
@@ -310,6 +313,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         { group: group.name },
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
       );
+      delete preProcessCursors[chatJid];
       return true;
     }
     // Only roll back if the message loop hasn't advanced the cursor further
@@ -331,9 +335,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         'Agent error, IPC advanced cursor during run — skipping rollback to prevent duplicate IPC messages',
       );
     }
+    delete preProcessCursors[chatJid];
     return false;
   }
 
+  delete preProcessCursors[chatJid];
   return true;
 }
 
@@ -579,6 +585,21 @@ async function main(): Promise<void> {
     // Slack Socket Mode events (prevents event loss during restart overlap)
     proxyServer.close();
     for (const ch of channels) await ch.disconnect();
+
+    // Roll back cursors for groups with in-flight containers so the next
+    // process picks up the unfinished messages via recoverPendingMessages.
+    const activeJids = queue.getActiveGroupJids();
+    for (const jid of activeJids) {
+      if (preProcessCursors[jid] !== undefined) {
+        lastAgentTimestamp[jid] = preProcessCursors[jid];
+        logger.info(
+          { jid, rolledBackTo: preProcessCursors[jid] },
+          'Rolling back cursor for in-flight container on shutdown',
+        );
+      }
+    }
+    if (activeJids.length > 0) saveState();
+
     await queue.shutdown(10000);
     process.exit(0);
   };
