@@ -465,8 +465,46 @@ async function main() {
     if (!DRY_RUN) await new Promise((r) => setTimeout(r, 200));
   }
 
-  const summary = { migrated, failed, total: personalTasks.length };
+  // 6. Verify deletions — re-scan To Do and check migrated tasks are gone
+  let verified = 0;
+  let stillPresent = 0;
+  if (!DRY_RUN && migrated > 0) {
+    log('Verifying deletions...');
+    const remainingIds = new Set();
+    for (const list of lists) {
+      if (LIST_FILTER && list.displayName !== LIST_FILTER) continue;
+      const remaining = await graphGetAll(
+        token,
+        `/me/todo/lists/${list.id}/tasks?$select=id,title`,
+      );
+      for (const t of remaining) remainingIds.add(t.id);
+    }
+
+    for (const task of personalTasks) {
+      if (remainingIds.has(task.id)) {
+        log(`  ⚠ Still in To Do: "${task.title}"`);
+        stillPresent++;
+      } else {
+        verified++;
+      }
+    }
+
+    log(
+      `Verification: ${verified} deleted, ${stillPresent} still present in To Do`,
+    );
+  }
+
+  const summary = {
+    migrated,
+    failed,
+    total: personalTasks.length,
+    verified,
+    stillPresent,
+  };
   log(`Done. Migrated: ${migrated}, Failed: ${failed}, Total: ${personalTasks.length}`);
+  if (!DRY_RUN && migrated > 0) {
+    log(`Verification: ${verified}/${migrated} tasks confirmed deleted from To Do`);
+  }
   console.log(JSON.stringify(summary));
 }
 
