@@ -371,23 +371,49 @@ async function migrateTask(token, task, planId, bucketId, listName) {
   const created = await graphPost(token, '/planner/tasks', plannerTask);
   log(`  Created: "${task.title}" → ${created.id}`);
 
-  // Add description if body exists
+  // Add description and checklist items to Planner task details
   const bodyContent = task.body?.content?.trim();
-  if (bodyContent) {
+  const checklistItems = task._checklistItems || [];
+
+  if (bodyContent || checklistItems.length > 0) {
     try {
-      // Need to get task details first for the etag
       const details = await graphGet(
         token,
         `/planner/tasks/${created.id}/details`,
       );
+      const patch = {};
+
+      if (bodyContent) {
+        // Strip HTML tags for plaintext Planner description
+        patch.description = bodyContent.replace(/<[^>]*>/g, '');
+        patch.previewType = 'description';
+      }
+
+      if (checklistItems.length > 0) {
+        patch.checklist = {};
+        for (const item of checklistItems) {
+          // Planner checklist uses GUIDs as keys
+          const id = crypto.randomUUID();
+          patch.checklist[id] = {
+            '@odata.type': 'microsoft.graph.plannerChecklistItem',
+            title: item.displayName,
+            isChecked: item.isChecked || false,
+          };
+        }
+      }
+
       await graphPatch(
         token,
         `/planner/tasks/${created.id}/details`,
-        { description: bodyContent, previewType: 'description' },
+        patch,
         details['@odata.etag'],
       );
+
+      if (checklistItems.length > 0) {
+        log(`  Added ${checklistItems.length} checklist item(s)`);
+      }
     } catch (err) {
-      log(`  Warning: failed to set description for "${task.title}": ${err.message}`);
+      log(`  Warning: failed to set details for "${task.title}": ${err.message}`);
     }
   }
 
@@ -435,6 +461,17 @@ async function main() {
       if (isPersonalTask(task)) {
         task._listId = list.id;
         task._listName = list.displayName;
+
+        // Fetch checklist items (notes/steps) for this task
+        try {
+          task._checklistItems = await graphGetAll(
+            token,
+            `/me/todo/lists/${list.id}/tasks/${task.id}/checklistItems`,
+          );
+        } catch {
+          task._checklistItems = [];
+        }
+
         personalTasks.push(task);
       }
     }
