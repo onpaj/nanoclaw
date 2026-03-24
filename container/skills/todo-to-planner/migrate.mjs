@@ -454,10 +454,11 @@ async function main() {
     log(`Scanning list "${list.displayName}"...`);
     const tasks = await graphGetAll(
       token,
-      `/me/todo/lists/${list.id}/tasks?$select=id,title,body,importance,status,dueDateTime,linkedResources`,
+      `/me/todo/lists/${list.id}/tasks?$select=id,title,body,importance,status,dueDateTime,linkedResources&$filter=status ne 'completed'`,
     );
 
     for (const task of tasks) {
+      if (task.status === 'completed') continue; // safety fallback
       if (isPersonalTask(task)) {
         task._listId = list.id;
         task._listName = list.displayName;
