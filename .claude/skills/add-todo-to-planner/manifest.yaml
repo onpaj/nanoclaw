@@ -1,0 +1,14 @@
+skill: add-todo-to-planner
+version: 1.0.0
+description: "Migrate personal tasks from Microsoft To Do to a Planner plan via Graph API"
+core_version: 1.2.10
+adds:
+  - container/skills/todo-to-planner/migrate.mjs
+  - container/skills/todo-to-planner/SKILL.md
+modifies: []
+structured:
+  npm_dependencies: {}
+  env_additions: []
+conflicts: []
+depends: []
+test: "npx vitest run --config vitest.skills.config.ts .claude/skills/add-todo-to-planner/tests/todo-to-planner.test.ts"
